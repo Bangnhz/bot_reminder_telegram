@@ -1,0 +1,9 @@
+# Kế thừa requirements chính
+-r requirements.txt
+
+# Development tools
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.7.0
+flake8>=6.1.0
+autopep8>=2.0.4
