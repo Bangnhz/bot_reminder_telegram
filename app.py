@@ -8,10 +8,12 @@ import db
 import google.generativeai as genai
 import re
 import asyncio
+from aiohttp import web
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PORT = int(os.getenv("PORT", 8080))  # Render cần port
 
 # Cấu hình Gemini AI
 if GEMINI_API_KEY:
@@ -876,7 +878,41 @@ def main():
         print("⚠ AI chưa được cấu hình", flush=True)
     print("✓ Lịch hẹn tự động đã được kích hoạt", flush=True)
     
-    app.run_polling(bootstrap_retries=5)
+    # Chạy bot với webhook cho Render
+    if os.getenv("RENDER"):
+        # Trên Render: dùng webhook
+        print(f"✓ Chạy trên Render với webhook, port {PORT}", flush=True)
+        
+        # Health check endpoint cho Render
+        async def health(request):
+            return web.Response(text="Bot is running!")
+        
+        webapp = web.Application()
+        webapp.router.add_get("/", health)
+        webapp.router.add_get("/health", health)
+        
+        # Start web server cho health check
+        runner = web.AppRunner(webapp)
+        
+        async def start_bot():
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', PORT)
+            await site.start()
+            print(f"✓ Health check server running on port {PORT}", flush=True)
+            
+            # Start bot polling
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling()
+            
+            # Keep running
+            while True:
+                await asyncio.sleep(1)
+        
+        asyncio.run(start_bot())
+    else:
+        # Local: chạy bình thường
+        app.run_polling(bootstrap_retries=5)
 
 if __name__ == "__main__":
     main()
