@@ -5,22 +5,28 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from telegram.request import HTTPXRequest
 from datetime import datetime, timedelta
 import db
-import google.generativeai as genai
+from openai import OpenAI
 import re
 import asyncio
+import json
 from aiohttp import web
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 8080))  # Render cần port
 
-# Cấu hình Gemini AI
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
+# Cấu hình OpenAI với custom base URL
+if OPENAI_API_KEY:
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
+        base_url="https://api.xingchiapi.com/v1"
+    )
+    # Danh sách models để fallback
+    MODELS = ["gpt-5.4", "gpt-6.1-terra", "gpt-6-sol"]
 else:
-    model = None
+    client = None
+    MODELS = []
 
 def normalize_time(time_input: str) -> str:
     """Chuẩn hóa giờ về định dạng HH:MM
@@ -372,11 +378,10 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 def parse_time_with_ai(text: str) -> dict:
     """Dùng AI để phân tích thời gian từ câu nói tự nhiên"""
-    if not model:
+    if not client:
         return None
     
-    prompt = f"""
-Bạn là trợ lý phân tích thời gian. Hãy phân tích câu sau và trả về thông tin thời gian:
+    prompt = f"""Bạn là trợ lý phân tích thời gian. Hãy phân tích câu sau và trả về thông tin thời gian:
 
 Câu: "{text}"
 Thời gian hiện tại: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -394,30 +399,43 @@ Ví dụ:
 - "Chào bạn" -> {{"has_reminder": false}}
 """
     
-    try:
-        response = model.generate_content(prompt)
-        result_text = response.text.strip()
-        
-        # Trích xuất JSON từ response (có thể có markdown code block)
-        json_match = re.search(r'\{[^{}]*\}', result_text)
-        if json_match:
-            import json
-            result = json.loads(json_match.group())
-            return result
-        
-    except Exception as e:
-        print(f"Lỗi AI parse: {e}")
+    # Thử từng model theo thứ tự
+    for model_name in MODELS:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "Bạn là trợ lý phân tích thời gian chuyên nghiệp. Luôn trả về JSON hợp lệ."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Trích xuất JSON từ response (có thể có markdown code block)
+            json_match = re.search(r'\{[^{}]*\}', result_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"✓ AI parse thành công với model: {model_name}", flush=True)
+                return result
+            
+        except Exception as e:
+            print(f"⚠ Model {model_name} lỗi: {e}", flush=True)
+            continue  # Thử model tiếp theo
     
+    print("❌ Tất cả models đều lỗi", flush=True)
     return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý tin nhắn tự nhiên bằng AI"""
     text = update.message.text
     
-    if not model:
+    if not client:
         await update.message.reply_text(
             "⚠️ Chức năng AI chưa được cấu hình!\n"
-            "Vui lòng dùng lệnh `/remind` thay thế."
+            "Vui lòng thêm OPENAI_API_KEY vào .env"
         )
         return
     
@@ -872,8 +890,8 @@ def main():
     app.job_queue.run_repeating(check_schedules, interval=300, first=10)
     
     print("✓ Bot đang chạy... (Nhấn Ctrl + C để dừng)", flush=True)
-    if model:
-        print("✓ AI (Gemini) đã được kích hoạt", flush=True)
+    if client:
+        print(f"✓ AI đã được kích hoạt với models: {', '.join(MODELS)}", flush=True)
     else:
         print("⚠ AI chưa được cấu hình", flush=True)
     print("✓ Lịch hẹn tự động đã được kích hoạt", flush=True)
